@@ -3,40 +3,43 @@ output: github_document
 ---
 
 ```{r init, include=FALSE}
-library(knitr)
-opts_chunk$set(cache=TRUE, autodep = TRUE, tidy = TRUE)
+knitr::opts_chunk$set(cache=TRUE, autodep = TRUE, tidy = TRUE, collapse = TRUE, 
+                      tidy.opts=list(blank=FALSE, width.cutoff=90), comment = "#>")
+#options(width = 90)
 ```
 
 
 
 # Using LocalSolver to solve VRP problems
 
-The last days I have been playing a bit with [LocalSolver](http://www.localsolver.com/) and tried to model various vehicle routing problems (VRP). LocalSolver is a heuristic solver based on a heuristic search approach combining different optimization techniques. It includes a math modeling language and there is a package so that it can be used from [R](https://www.r-project.org/. You need to download and install LocalSolver (I used v7.0) and get an academic license. 
+The last days I have been playing a bit with [LocalSolver](http://www.localsolver.com/) and tried to model various vehicle routing problems (VRP). LocalSolver is a heuristic solver based on a heuristic search approach combining different optimization techniques. It includes a math modeling language and there is a package so that it can be used from [R](https://www.r-project.org/). You need to download and install LocalSolver (I used v7.0) and get an academic license from their webpage. 
+
 
 
 ## Capacitated VRP (CVRP)
 
-First, we simulate some data:
+Let us start by consider the classical CVRP. First, we simulate some data:
 
 ```{r cvrpData}
 source("simulate.R")
 data <- simulateCVRP(customers = 10, seed = 578)
 str(data)
 ```
-Note that all data are integers since I have chosen to use integers in LocalSolver (input data must be the same data type). Next, we formulate the model using [LSP](http://www.localsolver.com/documentation/lspreference/index.html). The learning curve for LSP is quite steep; however, the [examples](http://www.localsolver.com/documentation/exampletour/index.html) help. I was missing a forum where to ask question though. An important issue is that you must choose from where the index in arrays start. I choose C style and let all index start from zero. We need decision variables `customersSequences[k]` containing a list of numbers in the range zero to `customers-1`. That is, if `customersSequences[k]` equals {0,4,6}, then truck mumber `k` visit customer 1, 5 and 7 (remember index start from zero).
+
+Note that all data are integers since I have chosen to use integers in LocalSolver (input data must be the same data type). Next, we formulate the model using [LSP](http://www.localsolver.com/documentation/lspreference/index.html). Here I used the example on LocalSolver's webpage as a starting point. The learning curve for LSP is quite steep; however, the [examples](http://www.localsolver.com/documentation/exampletour/index.html) help. I was missing a forum where to ask question though. An important issue is that you must choose from where the index in arrays start. I choose C style and let all index start from zero. We need decision variables `routeSequences[k]` containing a list of numbers in the range zero to `customers-1`. That is, if `routeSequences[k]` equals {0,4,6}, then truck mumber `k` visit customer 1, 5 and 7 (remember index start from zero).
 
 ```{r cvrpModel, warning=FALSE}
 library(localsolver)
 
 model <- "function model(){
-   customersSequences[k in 0..nbTrucks-1] <- list(nbCustomers);      // decision variable
-   constraint partition[k in 0..nbTrucks-1](customersSequences[k]);  // all customers must be visited by exaclty one truck
+   routeSequences[k in 0..nbTrucks-1] <- list(nbCustomers);      // decision variable
+   constraint partition[k in 0..nbTrucks-1](routeSequences[k]);  // each customer visited by exaclty one route
 
-   trucksUsed[k in 0..nbTrucks-1] <- count(customersSequences[k]) > 0;  
+   trucksUsed[k in 0..nbTrucks-1] <- count(routeSequences[k]) > 0;  
    nbTrucksUsed <- sum[k in 0..nbTrucks-1](trucksUsed[k]);
 
    for [k in 0..nbTrucks-1] {
-      local sequence <- customersSequences[k];
+      local sequence <- routeSequences[k];
       local c <- count(sequence);
 
       // The quantity needed in each route must not exceed the truck capacity
@@ -63,7 +66,7 @@ The model is added to LocalSolver using the [localsolver package](https://cran.r
 
 ```{r cvrpSolve}
 lsp <- set.temp.dir(lsp, path=getwd())    # add temporay files to this folder
-lsp <- add.output.expr(lsp, "customersSequences", c(data$nbTrucks, data$nbCustomers))
+lsp <- add.output.expr(lsp, "routeSequences", c(data$nbTrucks, data$nbCustomers))
 lsp <- add.output.expr(lsp, "routeDistances", data$nbTrucks)
 lsp <- add.output.expr(lsp, "routeQuantity", data$nbTrucks)
 lsp <- add.output.expr(lsp, "nbTrucksUsed")
@@ -77,7 +80,7 @@ The results are now in the list `sol`. Three temporay files are used by the solv
 length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
 ```
 
-We postprocess the solution to get a result in a readable format:
+We postprocess the solution to get a result in a more readable format:
 
 ```{r cvrpPostprocess}
 printSolution<-function(sol) {
@@ -85,9 +88,9 @@ printSolution<-function(sol) {
    cat("Total distance:", sol$totalDistance, "\n")
    cat("Routes:\n")
    for (r in 1:length(sol$routeDistances)) {
-      if (max(sol$customersSequences[r,])>=0) {
+      if (max(sol$routeSequences[r,])>=0) {
          cat("Customers:",
-             paste0(sol$customersSequences[r,which(sol$customersSequences[r,]!=-1)], collapse = "-"),
+             paste0(sol$routeSequences[r,which(sol$routeSequences[r,]!=-1)], collapse = "-"),
              "distance:", sol$routeDistances[r], "quantity:", sol$routeQuantity[r],
              "\n")
       }
@@ -95,6 +98,556 @@ printSolution<-function(sol) {
 }
 printSolution(sol)
 ```
+
+
+
+## Extension - Workday constraints
+
+Assume that only a single driver is avaliabele and that the maximum possible workday is specified. We need workday length, travel times and handling time.
+
+```{r oneDriverData}
+library(localsolver)
+source("simulate.R")
+data <- simulateDriver(customers = 10, seed = 578, drivers = 1)
+str(data)
+``` 
+
+To handle travel time constraints we add variables `routeStops[k][i]` which is the node visited at stop i (depot = node 0) and similar `arrivalTimes[k][i]` and `departureTimes[k][i]`.
+
+
+```{r oneDriverModel1}
+model <- "function model(){
+   routeSequences[k in 0..nbTrucks-1] <- list(nbCustomers);  
+   routeStops[k in 0..nbTrucks-1][0] = 0;
+   routeStops[k in 0..nbTrucks-1][nbNodes] = 0;
+   departureTimes[k in 0..nbTrucks-1][i in 0..nbNodes] <- int(0,depotLatestArrival);
+   arrivalTimes[k in 0..nbTrucks-1][i in 0..nbNodes] <- int(0,depotLatestArrival);
+
+   constraint partition[k in 0..nbTrucks-1](routeSequences[k]);  // each customer visited by exaclty one route
+
+   for [k in 0..nbTrucks-1] {
+      local sequence <- routeSequences[k];
+      local c <- count(sequence);
+      trucksUsed[k] <- count(routeSequences[k]) > 0;
+      // The quantity needed in each route must not exceed the truck capacity
+      routeQuantity[k] <- sum(0..c-1, i => demands[sequence[i]]);
+      constraint routeQuantity[k] <= truckCapacity;
+
+      // Distance travelled by truck k
+      routeDistances[k] <- sum(1..c-1, i => distanceMatrix[sequence[i-1]+1][sequence[i]+1]) +
+         (c > 0 ? (distanceMatrix[0][sequence[0]+1] + distanceMatrix[sequence[c-1]+1][0]) : 0);
+
+      if (k==0) constraint departureTimes[k][0] >= depotEarliestStart;  // first route 
+
+      for [i in 0..nbNodes] {
+         if (i!=0) {
+            routeStops[k][i] <- routeSequences[k][i-1] + 1;
+            arrivalTimes[k][i] <- departureTimes[k][i-1] + travelTimeMatrix[routeStops[k][i-1]][routeStops[k][i]];
+            departureTimes[k][i] <- (routeStops[k][i] > 0  ? arrivalTimes[k][i] + handlingTime : 0);
+         }
+      }
+      routeArrivalDepot[k] <- departureTimes[k][0] + (c > 0 ? (travelTimeMatrix[0][sequence[0]+1] +
+         travelTimeMatrix[sequence[c-1]+1][0]) : 0) +
+         sum(1..c-1, i => travelTimeMatrix[sequence[i-1]+1][sequence[i]+1]) + c*handlingTime;
+      if (k>0) {
+         constraint departureTimes[k][0] >= routeArrivalDepot[k-1];
+         constraint routeArrivalDepot[k] <= depotLatestArrival;
+      } else {
+         constraint routeArrivalDepot[k] <= depotLatestArrival;
+      }
+   }
+
+   nbTrucksUsed <- sum[k in 0..nbTrucks-1](trucksUsed[k]);
+   totalDistance <- sum[k in 0..nbTrucks-1](routeDistances[k]);
+   latestArrivalTime <- max[k in 0..nbTrucks-1](routeArrivalDepot[k]);
+
+   minimize totalDistance;
+   minimize latestArrivalTime;
+}"
+lsp <- ls.problem(model)
+lsp <- set.params(lsp, lsTimeLimit=20, indexFromZero=TRUE, lsNbThreads = 4)
+lsp <- set.temp.dir(lsp, path=getwd())
+lsp <- add.output.expr(lsp, "routeSequences", c(data$nbTrucks, data$nbCustomers))
+lsp <- add.output.expr(lsp, "routeDistances", data$nbTrucks)
+lsp <- add.output.expr(lsp, "routeQuantity", data$nbTrucks)
+lsp <- add.output.expr(lsp, "nbTrucksUsed")
+lsp <- add.output.expr(lsp, "totalDistance")
+lsp <- add.output.expr(lsp, "latestArrivalTime")
+lsp <- add.output.expr(lsp, "routeStops", c(data$nbTrucks, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "arrivalTimes", c(data$nbTrucks, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "departureTimes", c(data$nbTrucks, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "routeArrivalDepot", data$nbTrucks)
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+```
+
+We have minimized the total distance and next the lastest arrival time at the depot and postprocess the solution to get a result in a more readable format:
+
+```{r oneDriverPostprocess}
+printSolution<-function(sol) {
+   cat("Number of routes:", sol$nbTrucksUsed, "\n")
+   cat("Total distance:", sol$totalDistance, "\n")
+   cat("Latest depot arrival (min from midnight):", sol$latestArrivalTime, "\n")
+   cat("Routes:\n")
+   for (r in 1:length(sol$routeArrivalDepot)) {
+      if (max(sol$routeStops[r,])>0) {
+         cat("Customers:",
+             paste0(sol$routeStops[r,1:(which(sol$routeStops[r,]==0)[2])], collapse = "-"),
+             "departure:", sol$departureTimes[r,1], "finished:", sol$arrivalTimes[r, which(sol$routeStops[r,]==0)[2]],
+             "distance:", sol$routeDistances[r], "quantity:", sol$routeQuantity[r],
+             "\n")
+         cat("  Details:", sol$routeStops[r,1], paste0("(d:", sol$departureTimes[r,1], ") ->"))
+         for (i in 2:(which(sol$routeStops[r,]==0)[2]-1)) {
+            cat("\n           ", sol$routeStops[r,i], " (tt:", 
+                data$travelTimeMatrix[sol$routeStops[r,i-1]+1,sol$routeStops[r,i]+1],
+                " a:", sol$arrivalTimes[r,i], " d:", sol$departureTimes[r,i], ") ", "->", sep="")
+         }
+         cat("\n           ", sol$routeStops[r,which(sol$routeStops[r,]==0)[2]],
+             " (tt:", data$travelTimeMatrix[sol$routeStops[r,i-1]+1,sol$routeStops[r,i]+1],
+             " a:", sol$arrivalTimes[r,which(sol$routeStops[r,]==0)[2]], ")\n", sep="")
+      }
+   }
+}
+printSolution(sol)
+```
+
+Note currently there is no time added for filling the truck at the depot. Here the number of trucks is the maximum number of routes that can be used. Let us try another instance.
+
+```{r oneDriverModel2}
+data <- simulateDriver(customers = 30, seed = 578, drivers = 1, trucks = 10)
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+printSolution(sol)
+```
+
+Finally, an instance which is not feasible since the travel time is to long:
+
+```{r oneDriverModel3}
+data <- simulateDriver(customers = 10, seed = 578, drivers = 1, trucks = 10, travelTimes = c(30,60))
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+printSolution(sol)
+```
+
+There seems to be an error here in LocalSolver which writes out that there is a feasible solution, but the partition constraint does not hold:
+
+```{r oneDriverPartition}
+sol$routeSequences
+```
+
+
+
+## Extension - Multiple drivers
+
+Assume that multiple drivers are allowed and for simplicity assume that they have the same working time. To handle multiple drivers we need to add an driver index to the model. Note `nbTrucks` now becomes maximum number of trucks that can be used per driver. 
+
+```{r driversModel}
+data$drivers <- as.integer(2)
+model <- "function model(){
+   routeSequences[k in 0..nbTrucks-1][d in 0..drivers-1] <- list(nbCustomers);  
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][0] = 0;
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][nbNodes] = 0;
+   departureTimes[k in 0..nbTrucks-1][d in 0..drivers-1][i in 0..nbNodes] <- int(-1,depotLatestArrival);
+   arrivalTimes[k in 0..nbTrucks-1][d in 0..drivers-1][i in 0..nbNodes] <- int(-1,depotLatestArrival);
+
+   constraint partition[k in 0..nbTrucks-1][d in 0..drivers-1](routeSequences[k][d]);
+
+   for [k in 0..nbTrucks-1][d in 0..drivers-1] {
+      local sequence <- routeSequences[k][d];
+      local c <- count(sequence);
+      trucksUsed[k][d] <- count(routeSequences[k][d]) > 0;
+      // The quantity needed in each route must not exceed the truck capacity
+      routeQuantity[k][d] <- sum(0..c-1, i => demands[sequence[i]]);
+      constraint routeQuantity[k][d] <= truckCapacity;
+
+      // Distance travelled by truck k
+      routeDistances[k][d] <- (c > 0 ? (distanceMatrix[0][sequence[0]+1] + 
+         distanceMatrix[sequence[c-1]+1][0]) : 0) +
+         sum(1..c-1, i => distanceMatrix[sequence[i-1]+1][sequence[i]+1]);
+
+      if (k==0) constraint departureTimes[k][d][0] >= depotEarliestStart;
+
+      for [i in 0..nbNodes] {
+         if (i!=0) {
+            routeStops[k][d][i] <- sequence[i-1] + 1;
+            arrivalTimes[k][d][i] <- departureTimes[k][d][i-1] + 
+            travelTimeMatrix[routeStops[k][d][i-1]][routeStops[k][d][i]];
+            departureTimes[k][d][i] <- (routeStops[k][d][i] > 0  ? arrivalTimes[k][d][i] + handlingTime : -1);
+         }
+      }
+      routeArrivalDepot[k][d] <- departureTimes[k][d][0] + (c > 0 ? (travelTimeMatrix[0][sequence[0]+1] + travelTimeMatrix[sequence[c-1]+1][0]) : 0) +
+         sum(1..c-1, i => travelTimeMatrix[sequence[i-1]+1][sequence[i]+1]) + c*handlingTime;
+      if (k>0) {
+         constraint departureTimes[k][d][0] >= routeArrivalDepot[k-1][d];
+         constraint routeArrivalDepot[k][d] <= depotLatestArrival;
+      } else {
+         constraint routeArrivalDepot[k][d] <= depotLatestArrival;
+      }
+   }
+
+   nbTrucksUsed <- sum[k in 0..nbTrucks-1][d in 0..drivers-1] (trucksUsed[k][d]);
+   totalDistance <- sum[k in 0..nbTrucks-1][d in 0..drivers-1](routeDistances[k][d]);
+   latestArrivalTime <- max[k in 0..nbTrucks-1][d in 0..drivers-1] (routeArrivalDepot[k][d]);
+
+   minimize totalDistance;
+   minimize latestArrivalTime;
+}"
+lsp <- ls.problem(model)
+lsp <- set.params(lsp, lsTimeLimit=c(20,20), indexFromZero=TRUE, lsNbThreads = 4)
+lsp <- set.temp.dir(lsp, path=getwd())
+lsp <- add.output.expr(lsp, "routeSequences", c(data$nbTrucks, data$drivers, data$nbCustomers))
+lsp <- add.output.expr(lsp, "routeDistances", c(data$nbTrucks, data$drivers))
+lsp <- add.output.expr(lsp, "routeQuantity", c(data$nbTrucks, data$drivers))
+lsp <- add.output.expr(lsp, "nbTrucksUsed")
+lsp <- add.output.expr(lsp, "totalDistance")
+lsp <- add.output.expr(lsp, "latestArrivalTime")
+lsp <- add.output.expr(lsp, "routeStops", c(data$nbTrucks, data$drivers, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "arrivalTimes", c(data$nbTrucks, data$drivers, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "departureTimes", c(data$nbTrucks, data$drivers, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "routeArrivalDepot", c(data$nbTrucks, data$drivers))
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+```
+
+We consided the same instance as before by now with 2 drivers, minimized the total distances and next the latest arrival time at the depot. The solution are: 
+
+
+```{r driversPostProcess}
+printSolution<-function(sol) {
+   cat("Number of routes:", sol$nbTrucksUsed, "\n")
+   cat("Total distance:", sol$totalDistance, "\n")
+   cat("Latest depot arrival (min from midnight):", sol$latestArrivalTime, "\n")
+   cat("Routes:\n")
+   for (d in 1:length(sol$routeArrivalDepot[1,])) {
+      for (r in 1:length(sol$routeArrivalDepot[,1])) {
+         if (max(sol$routeStops[r,d,])>0) {
+            cat("Driver:", d, "Customers:",
+                paste0(sol$routeStops[r,d,1:(which(sol$routeStops[r,d,]==0)[2])], collapse = "-"),
+                "departure:", sol$departureTimes[r,d,1], "finished:", sol$arrivalTimes[r,d, which(sol$routeStops[r,d,]==0)[2]],
+                "distance:", sol$routeDistances[r], "quantity:", sol$routeQuantity[r],
+                "\n")
+            cat("  Details:", sol$routeStops[r,d,1], paste0("(d:", sol$departureTimes[r,d,1], ") ->"))
+            for (i in 2:(which(sol$routeStops[r,d,]==0)[2]-1)) {
+               cat("\n           ", sol$routeStops[r,d,i], " (tt:", 
+                   data$travelTimeMatrix[sol$routeStops[r,d,i-1]+1,sol$routeStops[r,d,i]+1],
+                   " a:", sol$arrivalTimes[r,d,i], " d:", sol$departureTimes[r,d,i], ") ", "->", sep="")
+            }
+            cat("\n           ", sol$routeStops[r,d,which(sol$routeStops[r,d,]==0)[2]],
+                " (tt:", data$travelTimeMatrix[sol$routeStops[r,d,i-1]+1,sol$routeStops[r,d,i]+1],
+                " a:", sol$arrivalTimes[r,d,which(sol$routeStops[r,d,]==0)[2]], ")\n", sep="")
+         }
+      }
+   }
+}
+printSolution(sol)
+```
+
+
+## Extension - Delivery over multiple days
+
+Assume that the orders can be delivered at specific days (we ignore the time windows for the moment):
+
+```{r daysData}
+data<-simulateVRPTW(drivers = 2, trucks = 5, customers = 10, days = 4)
+str(data)
+data$validDays
+```
+
+Valid days for an order corresponds to a one in the matrix `validDays`. 
+
+
+```{r daysModel}
+model <- '
+function model(){
+   routeSequences[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] <- list(nbCustomers);  
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][0] = 0;
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][nbNodes] = 0;
+   departureTimes[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][0] <- int(0,depotLatestArrival);
+   arrivalTimes[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 0..nbNodes] <- int(0,depotLatestArrival);
+
+   constraint partition[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeSequences[k][d][t]);
+
+   for [k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] {
+      local sequence <- routeSequences[k][d][t];
+      local c <- count(sequence);
+
+      trucksUsed[k][d][t] <- count(sequence) > 0;
+
+      routeQuantity[k][d][t] <- sum(0..c-1, i => demands[sequence[i]]);
+      constraint routeQuantity[k][d][t] <= truckCapacity;
+
+      routeDistances[k][d][t] <-
+         (c > 0 ? (distanceMatrix[0][sequence[0]+1] + distanceMatrix[sequence[c-1]+1][0]) : 0) +
+         sum(1..c-1, i => distanceMatrix[sequence[i-1]+1][sequence[i]+1]);
+
+      if (k==0) constraint departureTimes[k][d][t][0] >= depotEarliestStart;
+
+      for [i in 0..nbNodes] {
+         if (i!=0) {
+            routeStops[k][d][t][i] <- sequence[i-1] + 1;
+            arrivalTimes[k][d][t][i] <- (routeStops[k][d][t][i-1] > 0 || (i==1 && routeStops[k][d][t][i]>0) ?
+               departureTimes[k][d][t][i-1] +
+               travelTimeMatrix[routeStops[k][d][t][i-1]][routeStops[k][d][t][i]] : 0);
+            departureTimes[k][d][t][i] <-
+               (routeStops[k][d][t][i] > 0  ? arrivalTimes[k][d][t][i] + handlingTime : 0);
+         }
+      }
+      routeArrivalDepot[k][d][t] <- max[i in 1..nbCustomers](arrivalTimes[k][d][t][i]);
+      if (k>0) {
+         constraint departureTimes[k][d][t][0] >= routeArrivalDepot[k-1][d][t];
+         constraint routeArrivalDepot[k][d][t] <= depotLatestArrival;
+      } else {
+         constraint routeArrivalDepot[k][d][t] <= depotLatestArrival;
+      }
+   }
+
+   for [t in 0..days-1][i in 0..nbCustomers-1] {
+      visitAtDay[t][i] <- sum[k in 0..nbTrucks-1][d in 0..drivers-1](indexOf(routeSequences[k][d][t],i) > -1);
+      constraint visitAtDay[t][i] <= validDays[i][t];
+   }
+
+   nbTrucksUsed <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] (trucksUsed[k][d][t]);
+   totalDistance <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeDistances[k][d][t]);
+   latestArrival <- max[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeArrivalDepot[k][d][t]);
+
+   // Objective: minimize the number of trucks used, then minimize the distance travelled
+   minimize totalDistance;
+   minimize latestArrival;
+
+   // modify results so can output to R (cannot output array with more than 3 index)
+   for [k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] {
+         local r = k + d*nbTrucks + t*nbTrucks*drivers;
+         routes[r][i in 0..nbNodes] <- routeStops[k][d][t][i];
+         arrivalT[r][i in 0..nbNodes] <- arrivalTimes[k][d][t][i];
+         routeDepotArrival[r] <- routeArrivalDepot[k][d][t];
+         departureT[r][i in 0..nbNodes] <- departureTimes[k][d][t][i];
+         routeDist[r] <- routeDistances[k][d][t];
+         routeQuant[r] <- routeQuantity[k][d][t];
+         driver[r] <- d+1;
+         day[r] <- t+1;
+   }
+}
+'
+lsp <- ls.problem(model)
+lsp <- set.params(lsp, lsTimeLimit=c(10,10), indexFromZero=TRUE, lsNbThreads = 4)
+lsp <- set.temp.dir(lsp, path=getwd())
+lsp <- add.output.expr(lsp, "nbTrucksUsed")
+lsp <- add.output.expr(lsp, "totalDistance")
+lsp <- add.output.expr(lsp, "latestArrival")
+maxR <- data$nbTrucks*data$days*data$drivers
+lsp <- add.output.expr(lsp, "routes", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "arrivalT", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "departureT", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "driver", maxR)
+lsp <- add.output.expr(lsp, "day", maxR)
+lsp <- add.output.expr(lsp, "routeDist", maxR)
+lsp <- add.output.expr(lsp, "routeDepotArrival", maxR)
+lsp <- add.output.expr(lsp, "routeQuant", maxR)
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+```
+
+
+```{r daysPostProcess}
+printSolution<-function(sol) {
+   cat("Number of routes:", sol$nbTrucksUsed, "\n")
+   cat("Total distance:", sol$totalDistance, "\n")
+   cat("Latest depot arrival (min from midnight):", sol$latestArrival, "\n")
+   cat("Routes:\n")
+   for (r in 1:length(sol$driver)) {
+      if (max(sol$routes[r,])>0) {
+         cat("Day:", sol$day[r],"driver:", sol$driver[r], "customers:",
+             paste0(sol$routes[r,1:(which(sol$routes[r,]==0)[2])], collapse = "-"),
+             "departure:", sol$departureT[r,1], "finished:", sol$arrivalT[r, which(sol$routes[r,]==0)[2]],
+             "distance:", sol$routeDist[r], "quantity:", sol$routeQuant[r],
+             "\n")
+         cat("  Details:", sol$routes[r,1], paste0("(d:", sol$departureT[r,1], ") ->"))
+         for (i in 2:(which(sol$routes[r,]==0)[2]-1)) {
+            cat("\n           ", sol$routes[r,i], " (tt:", 
+                data$travelTimeMatrix[sol$routes[r,i-1]+1,sol$routes[r,i]+1], 
+                " a:", sol$arrivalT[r,i], " d:", sol$departureT[r,i], ") ", "->", sep="")
+         }
+         cat("\n           ", sol$routes[r,which(sol$routes[r,]==0)[2]],
+             " (tt:", data$travelTimeMatrix[sol$routes[r,i-1]+1,sol$routes[r,i]+1],
+             " a:", sol$arrivalT[r,which(sol$routes[r,]==0)[2]], ")\n", sep="")
+      }
+   }
+}
+printSolution(sol)
+```
+
+Note there are no deliveries at day 1. 
+
+
+
+
+## Time windows
+
+Finally, let us try to add time windows to the model above
+
+
+```{r twModel}
+model <- '
+function model(){
+
+   routeSequences[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] <- list(nbCustomers);  
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][0] = 0;
+   routeStops[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][nbNodes] = 0;
+   departureTimes[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][0] <- int(0,depotLatestArrival);
+   arrivalTimes[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 0..nbNodes] <- int(0,depotLatestArrival);
+   waitingTimes[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 0..nbNodes] <- int(0,600);
+
+   constraint partition[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeSequences[k][d][t]);
+
+   for [k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] {
+      local sequence <- routeSequences[k][d][t];
+      local c <- count(sequence);
+
+      trucksUsed[k][d][t] <- count(sequence) > 0;
+
+      // The quantity needed in each route must not exceed the truck capacity
+      routeQuantity[k][d][t] <- sum(0..c-1, i => demands[sequence[i]]);
+      constraint routeQuantity[k][d][t] <= truckCapacity;
+
+      // Distance travelled by truck k
+      routeDistances[k][d][t] <-
+         (c > 0 ? (distanceMatrix[0][sequence[0]+1] + distanceMatrix[sequence[c-1]+1][0]) : 0) +
+         sum(1..c-1, i => distanceMatrix[sequence[i-1]+1][sequence[i]+1]);
+
+      if (k==0) constraint departureTimes[k][d][t][0] >= depotEarliestStart;
+
+      for [i in 0..nbNodes] {
+         if (i!=0) {
+            routeStops[k][d][t][i] <- sequence[i-1] + 1;
+            arrivalTimes[k][d][t][i] <- (routeStops[k][d][t][i-1] > 0 || (i==1 && routeStops[k][d][t][i]>0) ?
+               departureTimes[k][d][t][i-1] +
+               travelTimeMatrix[routeStops[k][d][t][i-1]][routeStops[k][d][t][i]] +
+               waitingTimes[k][d][t][i] : 0);
+            // If hard time window constraints
+            //constraint arrivalTimes[k][d][t][i] >= (routeStops[k][d][t][i] > 0) * timeWindowsLB[routeStops[k][d][t][i]];
+            //constraint arrivalTimes[k][d][t][i] <= timeWindowsUB[routeStops[k][d][t][i]];
+            departureTimes[k][d][t][i] <-
+               (routeStops[k][d][t][i] > 0  ? arrivalTimes[k][d][t][i] + handlingTime : 0);
+         }
+      }
+      routeArrivalDepot[k][d][t] <- max[i in 1..nbCustomers](arrivalTimes[k][d][t][i]);
+      if (k>0) {
+         constraint departureTimes[k][d][t][0] >= routeArrivalDepot[k-1][d][t];
+         constraint routeArrivalDepot[k][d][t] <= depotLatestArrival;
+      } else {
+         constraint routeArrivalDepot[k][d][t] <= depotLatestArrival;
+      }
+   }
+
+   for [t in 0..days-1][i in 0..nbCustomers-1] {
+      visitAtDay[t][i] <- sum[k in 0..nbTrucks-1][d in 0..drivers-1](indexOf(routeSequences[k][d][t],i) > -1);
+      constraint visitAtDay[t][i] <= validDays[i][t];
+   }
+
+   nbTrucksUsed <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] (trucksUsed[k][d][t]);
+
+   totalDistance <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeDistances[k][d][t]);
+
+   totalWaiting <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 0..nbNodes]
+      (waitingTimes[k][d][t][i]);
+
+   totalViolateTWCtr <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 1..nbCustomers](
+      routeStops[k][d][t][i] > 0 && (arrivalTimes[k][d][t][i] < timeWindowsLB[routeStops[k][d][t][i]]  ||
+      arrivalTimes[k][d][t][i] > timeWindowsUB[routeStops[k][d][t][i]])
+   );
+   totalViolateTWMin <- sum[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1][i in 1..nbCustomers](
+      (routeStops[k][d][t][i] > 0 && arrivalTimes[k][d][t][i] < timeWindowsLB[routeStops[k][d][t][i]]) *
+      (timeWindowsLB[routeStops[k][d][t][i]] - arrivalTimes[k][d][t][i]) +
+      (routeStops[k][d][t][i] > 0 && arrivalTimes[k][d][t][i] > timeWindowsUB[routeStops[k][d][t][i]]) *
+      (arrivalTimes[k][d][t][i] - timeWindowsUB[routeStops[k][d][t][i]])
+   );
+
+   latestArrival <- max[k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1](routeArrivalDepot[k][d][t]);
+
+   minimize totalViolateTWMin;
+   minimize totalViolateTWCtr;
+   minimize nbTrucksUsed;
+   minimize totalDistance;
+   minimize totalWaiting;
+   minimize latestArrival;
+
+   // modify results so can output to R (cannot output array with more than 3 index)
+   for [k in 0..nbTrucks-1][d in 0..drivers-1][t in 0..days-1] {
+         local r = k + d*nbTrucks + t*nbTrucks*drivers;
+         routes[r][i in 0..nbNodes] <- routeStops[k][d][t][i];
+         arrivalT[r][i in 0..nbNodes] <- arrivalTimes[k][d][t][i];
+         routeDepotArrival[r] <- routeArrivalDepot[k][d][t];
+         departureT[r][i in 0..nbNodes] <- departureTimes[k][d][t][i];
+         waitingT[r][i in 0..nbNodes] <- waitingTimes[k][d][t][i];
+         routeDist[r] <- routeDistances[k][d][t];
+         routeQuant[r] <- routeQuantity[k][d][t];
+         driver[r] <- d+1;
+         day[r] <- t+1;
+   }
+}
+'
+rm(lsp)
+lsp <- ls.problem(model)
+lsp <- set.params(lsp, lsTimeLimit=c(10,10,10,10,10,10), indexFromZero=TRUE, lsNbThreads = 4)
+lsp <- set.temp.dir(lsp, path=getwd())
+
+lsp <- add.output.expr(lsp, "nbTrucksUsed")
+lsp <- add.output.expr(lsp, "totalDistance")
+lsp <- add.output.expr(lsp, "totalWaiting")
+lsp <- add.output.expr(lsp, "totalViolateTWCtr")
+lsp <- add.output.expr(lsp, "totalViolateTWMin")
+lsp <- add.output.expr(lsp, "latestArrival")
+maxR <- data$nbTrucks*data$days*data$drivers
+lsp <- add.output.expr(lsp, "routes", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "arrivalT", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "departureT", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "waitingT", c(maxR, data$nbNodes+1))
+lsp <- add.output.expr(lsp, "driver", maxR)
+lsp <- add.output.expr(lsp, "day", maxR)
+lsp <- add.output.expr(lsp, "routeDist", maxR)
+lsp <- add.output.expr(lsp, "routeDepotArrival", maxR)
+lsp <- add.output.expr(lsp, "routeQuant", maxR)
+sol<-ls.solve(lsp, data)
+length(grep("feasible solution", readLines("output.txt"), value = TRUE, ignore.case = TRUE))>0
+```
+
+
+```{r twPostProcess}
+printSolution<-function(sol) {
+   cat("Number of routes:", sol$nbTrucksUsed, "\n")
+   cat("Total distance:", sol$totalDistance, "\n")
+   cat("Total waiting time:", sol$totalWaiting, "\n")
+   cat("Total time window violations:", sol$totalViolateTWCtr, "\n")
+   cat("Total time window violations (min):", sol$totalViolateTWMin, "\n")
+   cat("Latest depot arrival (min from midnight):", sol$latestArrival, "\n")
+   cat("Routes:\n")
+   for (r in 1:length(sol$driver)) {
+      if (max(sol$routes[r,])>0) {
+         cat("Day:", sol$day[r],"driver:", sol$driver[r], "customers:",
+             paste0(sol$routes[r,1:(which(sol$routes[r,]==0)[2])], collapse = "-"),
+             "departure:", sol$departureT[r,1], "finished:", sol$arrivalT[r, which(sol$routes[r,]==0)[2]],
+             "distance:", sol$routeDist[r], "quantity:", sol$routeQuant[r],
+             "\n")
+         cat("  Details:", sol$routes[r,1], paste0("(d:", sol$departureT[r,1], ") ->"))
+         for (i in 2:(which(sol$routes[r,]==0)[2]-1)) {
+            cat("\n           ", sol$routes[r,i], " (tt:", data$travelTimeMatrix[sol$routes[r,i-1]+1,sol$routes[r,i]+1],
+                " w:", sol$waitingT[r,i], " a:", sol$arrivalT[r,i], " d:", sol$departureT[r,i], ") ",
+                " tw:[", data$timeWindowsLB[sol$routes[r,i]+1], ",", data$timeWindowsUB[sol$routes[r,i]+1], "] ->", sep="")
+         }
+         cat("\n           ", sol$routes[r,which(sol$routes[r,]==0)[2]],
+             " (tt:", data$travelTimeMatrix[sol$routes[r,i-1]+1,sol$routes[r,i]+1],
+             " a:", sol$arrivalT[r,which(sol$routes[r,]==0)[2]], ")\n", sep="")
+      }
+   }
+}
+printSolution(sol)
+```
+
+Note there are no deliveries at day 1. 
+
+
+
+
 
 
 
