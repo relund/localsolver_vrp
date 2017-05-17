@@ -24,7 +24,7 @@ str(data)
 #>  $ distanceMatrix: int [1:11, 1:11] 0 144 5 31 14 97 167 161 68 289 ...
 ```
 
-Note that all data are integers since I have chosen to use integers in LocalSolver (input data must be the same data type). Next, we formulate the model using [LSP](http://www.localsolver.com/documentation/lspreference/index.html). Here I used the example on LocalSolver's webpage as a starting point. The learning curve for LSP is quite steep; however, the [examples](http://www.localsolver.com/documentation/exampletour/index.html) help. I was missing a forum where to ask question though. An important issue is that you must choose where the index in arrays start. I choose C style and let all index start from zero. We need decision variables `routeSequences[k]` containing a list of numbers in the range zero to `customers-1`. That is, if `routeSequences[k]` equals {0,4,6}, then truck mumber `k` visit customer 1, 5 and 7 (remember index start from zero).
+Note that all data are integers since I have chosen to use integers in LocalSolver (input data must be the same data type). Next, we formulate the model using [LSP](http://www.localsolver.com/documentation/lspreference/index.html). Here I used the example on LocalSolver's webpage as a starting point. The learning curve for LSP is quite steep; however, the [examples](http://www.localsolver.com/documentation/exampletour/index.html) help. I was missing a forum where to ask question though. An important issue is that you must choose where the index in arrays start. I choose C style and let all index start from zero. We need decision variables `routeSequences[k]` containing a list of numbers in the range zero to `customers-1`. That is, if `routeSequences[k]` equals {0,4,6}, then truck number `k` visit customer 1, 5 and 7 (remember index start from zero).
 
 ``` r
 library(localsolver)
@@ -71,7 +71,7 @@ lsp <- add.output.expr(lsp, "totalDistance")
 sol <- ls.solve(lsp, data)
 ```
 
-The results are now in the list `sol`. Three temporay files are used by the solver. `input.lsp` contains the model (with input and output) passed to the solver, `output.txt` the solver log and `data.txt` the input data. Unfortuantly, the solver status is not returned! So you may have to check the log to see if a feasible solution was found:
+The results are now in the list `sol`. Three temporary files are used by the solver. `input.lsp` contains the model (with input and output) passed to the solver, `output.txt` the solver log and `data.txt` the input data. Unfortunately, the solver status is not returned! So you may have to check the log to see if a feasible solution was found:
 
 ``` r
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE)) > 0
@@ -104,7 +104,7 @@ printSolution(sol)
 Extension - Workday constraints
 -------------------------------
 
-Assume that only a single driver is avaliabele and that the maximum possible workday is specified. We need workday length, travel times and handling time. Note that we now use `maxRoutes` instead of `trucks` which denote the maximum number of routes per driver.
+Assume that only a single driver is available and that the maximum possible workday is specified. We need workday length, travel times and handling time. Note that we now use `maxRoutes` instead of `trucks` which denote the maximum number of routes per driver.
 
 ``` r
 data <- simulateDriver(customers = 10, seed = 578, drivers = 1, maxRoutes = 5)
@@ -311,7 +311,7 @@ printSolution(sol)
 #>            0 (tt:6 a:1200)
 ```
 
-Note no feasible solution can be found, since the driver can not keep the latest arrival at depot limit. That is, the printed solution is the unfeasible soltion found when the solver stopped. This is not the same as a proof of that no feasible solution exists since it is a heuristic solver we use.
+Note no feasible solution can be found, since the driver can not keep the latest arrival at depot limit. That is, the printed solution is the unfeasible solution found when the solver stopped. This is not the same as a proof of that no feasible solution exists since it is a heuristic solver we use.
 
 Extension - Multiple drivers
 ----------------------------
@@ -384,7 +384,7 @@ length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.c
 #> [1] TRUE
 ```
 
-We consided the same instance as before but now with 3 drivers, minimized the total distance and next the latest arrival time at the depot. The solution are:
+We considered the same instance as before but now with 3 drivers, minimized the total distance and next the latest arrival time at the depot. The solution are:
 
 ``` r
 printSolution <- function(sol) {
@@ -697,7 +697,7 @@ Note there may not always be deliveries on a given day.
 Time windows
 ------------
 
-Finally, let us try to add time windows to the model above. I here formulate the time windows as soft constraints and try to minimize the total time not satisfing the time window.
+Finally, let us try to add time windows to the model above. I here formulate the time windows as soft constraints and try to minimize the total time not satisfying the time window.
 
 ``` r
 model <- "
