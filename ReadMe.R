@@ -1,35 +1,9 @@
----
-output: github_document
----
-
-```{r init, include=FALSE, purl = FALSE}
-knitr::opts_chunk$set(cache=TRUE, tidy = TRUE, collapse = TRUE, autodep = TRUE, 
-                      tidy.opts=list(blank=FALSE, width.cutoff=100), comment = "#>")
-options(width = 100)
-```
-
-
-
-# Using LocalSolver to solve VRP problems
-
-The last days I have been playing a bit with [LocalSolver](http://www.localsolver.com/) and tried to model various vehicle routing problems (VRP). LocalSolver is a heuristic solver based on a heuristic search approach combining different optimization techniques. It includes a math modeling language (LSP) and there is a package so that it can be used from [R](https://www.r-project.org/). You need to download and install LocalSolver (I used v7.0) and get an academic license from their webpage. 
-
-Below I will formulate models for different VRPs and solve them using LocalSolver. The purpose of these tests is not to compare them with an optimal solution to the problems, but to examine the modelling capabilities of LSP. All the code used can be found in files `simulate.R` and `ReadMe.R`. 
-
-
-## Capacitated VRP (CVRP)
-
-Let us start by consider the classical CVRP. First, we simulate some data:
-
-```{r cvrpData}
+## ----cvrpData------------------------------------------------------------
 source("simulate.R")
 data <- simulateCVRP(customers = 10, seed = 578)
 str(data)
-```
 
-Note that all data are integers since I have chosen to use integers in LocalSolver (input data must be the same data type). Next, we formulate the model using [LSP](http://www.localsolver.com/documentation/lspreference/index.html). Here I used the example on LocalSolver's webpage as a starting point. The learning curve for LSP is quite steep; however, the [examples](http://www.localsolver.com/documentation/exampletour/index.html) help. I was missing a forum where to ask question though. An important issue is that you must choose where the index in arrays start. I choose C style and let all index start from zero. We need decision variables `routeSequences[k]` containing a list of numbers in the range zero to `customers-1`. That is, if `routeSequences[k]` equals {0,4,6}, then truck mumber `k` visit customer 1, 5 and 7 (remember index start from zero).
-
-```{r cvrpModel, warning=FALSE}
+## ----cvrpModel, warning=FALSE--------------------------------------------
 library(localsolver)
 model <- "function model(){
    routeSequences[k in 0..nbTrucks-1] <- list(nbCustomers);      // decision variable
@@ -60,11 +34,8 @@ model <- "function model(){
 }"
 lsp <- ls.problem(model)
 lsp <- set.params(lsp, lsTimeLimit=c(20,20), indexFromZero=TRUE, lsNbThreads = 4)
-```
 
-The model is added to LocalSolver using the [localsolver package](https://cran.r-project.org/web/packages/localsolver/index.html). I set the time limit to 20 seconds for each objective. Output returned to R can be added using function `add.output.expr`.
-
-```{r cvrpSolve}
+## ----cvrpSolve-----------------------------------------------------------
 lsp <- set.temp.dir(lsp, path=getwd())    # add temporay files to this folder
 lsp <- add.output.expr(lsp, "routeSequences", c(data$nbTrucks, data$nbCustomers))
 lsp <- add.output.expr(lsp, "routeDistances", data$nbTrucks)
@@ -72,17 +43,11 @@ lsp <- add.output.expr(lsp, "routeQuantity", data$nbTrucks)
 lsp <- add.output.expr(lsp, "nbTrucksUsed")
 lsp <- add.output.expr(lsp, "totalDistance")
 sol<-ls.solve(lsp, data)
-```
 
-The results are now in the list `sol`. Three temporay files are used by the solver. `input.lsp` contains the model (with input and output) passed to the solver, `output.txt` the solver log and `data.txt` the input data. Unfortuantly, the solver status is not returned! So you may have to check the log to see if a feasible solution was found:
-
-```{r cvrpCheck}
+## ----cvrpCheck-----------------------------------------------------------
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
-```
 
-We postprocess the solution to get a result in a more readable format:
-
-```{r cvrpPostprocess}
+## ----cvrpPostprocess-----------------------------------------------------
 printSolution<-function(sol) {
    cat("Number of routes:", sol$nbTrucksUsed, "\n")
    cat("Total distance:", sol$totalDistance, "\n")
@@ -97,23 +62,12 @@ printSolution<-function(sol) {
    }
 }
 printSolution(sol)
-```
 
-
-
-## Extension - Workday constraints
-
-Assume that only a single driver is avaliabele and that the maximum possible workday is specified. We need workday length, travel times and handling time. Note that we now use `maxRoutes` instead of `trucks` which denote the maximum number of routes per driver. 
-
-```{r oneDriverData}
+## ----oneDriverData-------------------------------------------------------
 data <- simulateDriver(customers = 10, seed = 578, drivers = 1, maxRoutes = 5)
 str(data)
-``` 
 
-To handle travel time constraints we add variables `routeStops[k][i]` which is the node visited at stop i (depot = node 0) and similar `arrivalTimes[k][i]` and `departureTimes[k][i]`.
-
-
-```{r oneDriverModel1}
+## ----oneDriverModel1-----------------------------------------------------
 model <- "function model(){
    routeSequences[k in 0..maxRoutes-1] <- list(nbCustomers);  
    routeStops[k in 0..maxRoutes-1][0] = 0;
@@ -174,11 +128,8 @@ lsp <- add.output.expr(lsp, "departureTimes", c(data$maxRoutes, data$nbNodes+1))
 lsp <- add.output.expr(lsp, "routeArrivalDepot", data$maxRoutes)
 sol<-ls.solve(lsp, data)
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
-```
 
-We have minimized the total distance and next the lastest arrival time at the depot and postprocess the solution to get the result in a more readable format:
-
-```{r oneDriverPostprocess}
+## ----oneDriverPostprocess------------------------------------------------
 printSolution<-function(sol) {
    cat("Number of routes:", sol$totalRoutesUsed, "\n")
    cat("Total distance:", sol$totalDistance, "\n")
@@ -206,11 +157,8 @@ printSolution<-function(sol) {
    }
 }
 printSolution(sol)
-```
 
-Note currently there is no time added for filling the truck at the depot. Let us try another instance.
-
-```{r oneDriverModel2}
+## ----oneDriverModel2-----------------------------------------------------
 data <- simulateDriver(customers = 20, seed = 578, drivers = 1, maxRoutes = 12)
 lsp <- clear.output.exprs(lsp)
 lsp <- add.output.expr(lsp, "routeSequences", c(data$maxRoutes, data$nbCustomers))
@@ -226,17 +174,8 @@ lsp <- add.output.expr(lsp, "routeArrivalDepot", data$maxRoutes)
 sol<-ls.solve(lsp, data)
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
 printSolution(sol)
-```
 
-Note no feasible solution can be found, since the driver can not keep the latest arrival at depot limit. That is, the printed solution is the unfeasible soltion found when the solver stopped. This is not the same as a proof of that no feasible solution exists since it is a heuristic solver we use. 
-
-
-
-## Extension - Multiple drivers
-
-Assume that multiple drivers are allowed and for simplicity assume that they have the same working time. To handle multiple drivers we need to add a driver index to the model.  
-
-```{r driversModel}
+## ----driversModel--------------------------------------------------------
 data$drivers <- as.integer(3)
 model <- "function model(){
    routeSequences[k in 0..maxRoutes-1][d in 0..drivers-1] <- list(nbCustomers);  
@@ -299,12 +238,8 @@ lsp <- add.output.expr(lsp, "departureTimes", c(data$maxRoutes, data$drivers, da
 lsp <- add.output.expr(lsp, "routeArrivalDepot", c(data$maxRoutes, data$drivers))
 sol<-ls.solve(lsp, data)
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
-```
 
-We consided the same instance as before but now with 3 drivers, minimized the total distance and next the latest arrival time at the depot. The solution are: 
-
-
-```{r driversPostProcess}
+## ----driversPostProcess--------------------------------------------------
 printSolution<-function(sol) {
    cat("Number of routes:", sol$totalRoutesUsed, "\n")
    cat("Total distance:", sol$totalDistance, "\n")
@@ -332,26 +267,13 @@ printSolution<-function(sol) {
    }
 }
 printSolution(sol)
-```
 
-Note with 3 drivers we can keep the latest arrival at depot limit. 
-
-
-
-## Extension - Delivery over multiple days
-
-Assume that the orders can be delivered at specific days (we ignore the time windows for the moment):
-
-```{r daysData, cache=FALSE}
+## ----daysData, cache=FALSE-----------------------------------------------
 data<-simulateVRPTW(drivers = 2, maxRoutes = 5, customers = 30, days = 7, seed = 789)
 str(data)
 data$validDays
-```
 
-Valid days for an order corresponds to a one in the matrix `validDays`. For instance, customer 29 can be visited in days `r paste0(which(data$validDays[29,]==1), collapse=", ")`. We add a constraint that customer i must be visited at valid days. 
-
-
-```{r daysModel}
+## ----daysModel-----------------------------------------------------------
 model <- "
 function model(){
    routeSequences[k in 0..maxRoutes-1][d in 0..drivers-1][t in 0..days-1] <- list(nbCustomers); 
@@ -435,10 +357,8 @@ lsp <- add.output.expr(lsp, "routeDepotArrival", maxR)
 lsp <- add.output.expr(lsp, "routeQuant", maxR)
 sol<-ls.solve(lsp, data)
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
-```
 
-
-```{r daysPostProcess}
+## ----daysPostProcess-----------------------------------------------------
 printSolution<-function(sol) {
    cat("Number of routes:", sol$totalRoutesUsed, "\n")
    cat("Total distance:", sol$totalDistance, "\n")
@@ -464,19 +384,8 @@ printSolution<-function(sol) {
    }
 }
 printSolution(sol)
-```
 
-Note there may not always be deliveries on a given day.
-
-
-
-
-## Time windows
-
-Finally, let us try to add time windows to the model above. I here formulate the time windows as soft constraints and try to minimize the total time not satisfing the time window.
-
-
-```{r twModel}
+## ----twModel-------------------------------------------------------------
 model <- "
 function model(){
    routeSequences[k in 0..maxRoutes-1][d in 0..drivers-1][t in 0..days-1] <- list(nbCustomers); 
@@ -586,10 +495,8 @@ lsp <- add.output.expr(lsp, "routeDepotArrival", maxR)
 lsp <- add.output.expr(lsp, "routeQuant", maxR)
 sol<-ls.solve(lsp, data)
 length(grep("Feasible solution", readLines("output.txt"), value = TRUE, ignore.case = FALSE))>0
-```
 
-
-```{r twPostProcess}
+## ----twPostProcess-------------------------------------------------------
 printSolution<-function(sol) {
    cat("Number of routes:", sol$totalRoutesUsed, "\n")
    cat("Total distance:", sol$totalDistance, "\n")
@@ -617,22 +524,4 @@ printSolution<-function(sol) {
    }
 }
 printSolution(sol)
-```
-
-All time windows has been satisfied.
-
-
-
-# Pitfalls
-
-To summarize some of the pitfalls I experienced during coding:
-
-- All input data must have be of the same data type as specified in the model (e.g. integers).
-- Remember when index from zero, this holds for all variables/data.
-- In `set.params` the parameter `lsTimeLimit=c(10,10)` must have the same length as the number of objectives. If e.g. `lsTimeLimit=10` it corresponds to `lsTimeLimit=c(0,10)` (only the last objective is optimized) and not `lsTimeLimit=c(10,10)` which seems more obvious.
-- You must specify the dimensions of output. Hence, when you run a new instance, you have to add output expressions again. 
-- The dimension of output arrays cannot be more than 3 for some strange reason. So you may have to transform your output.
-
-
-
 
