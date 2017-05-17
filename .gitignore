@@ -12,3 +12,5 @@ error.txt
 input.lsp
 output.txt
 ReadMe_cache
+cache
+extract_code.R
