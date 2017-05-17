@@ -1,0 +1,14 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data.txt
+model_cvrp.R
+model_drivers_days.R
+model_drivers_days_tw_new.R
+model_drivers_max_time.R
+model_one_driver_max_time.R
+error.txt
+input.lsp
+output.txt
+ReadMe_cache
